@@ -209,3 +209,131 @@
                  (tri (the fixnum (+ n c))
                       (the fixnum (- n 1))))))
     (tri 0 n)))
+
+
+
+;;; Chapter 3 -- Functional Programming
+;;; ----------------------------------------------------------------------
+
+
+;; programs which evolve rather than being developed are the kinds of
+;; programs we are striving to learn to write in this book
+
+;; when we talk about functional programming, we mean input->output
+;; rather than mutating state via destructive changes
+
+;; to illustrate the difference between functional programming and
+;; traditional imperative programming...
+
+(defun bad-reverse (lst)
+  (let* ((len (length lst))
+         (ilimit (truncate (/ len 2))))
+    (do ((i 0 (1+ i))
+         (j (1- len) (1- j)))
+        ((>= i ilimit))
+      (rotatef (nth i lst) (nth j lst)))))
+
+;; Bad code like this is infectious. Because it mutates state, its
+;; callers must be prepared and expecting that. If you are writing
+;; in a mostly functional style, a single definition like this could
+;; prove painful
+
+;; before moving forward, lets try to write the good reverse function
+
+(defun my-reverse (lst acc)
+  (if (null lst)
+      acc
+      (my-reverse (cdr lst) (cons (car lst) acc))))
+
+;; here is the definition given in the book
+
+(defun good-reverse (lst)
+  (labels ((rev (lst acc)
+             (if (null lst)
+                 acc
+                 (rev (cdr lst) (const (car lst) acc)))))
+    (rev lst nil)))
+
+
+;; Some quick observations from having typed both of those definitions
+;; out slowly, is that the good-reverse definition is better design,
+;; because the call does not require an initial empty list, as my
+;; definition did. The writer achieved this by definining an inner
+;; definition local to good-reverse that allowed us to provide our own
+;; default value for the implementation. This is good, the user
+;; shouldn't need to know about minor details like that.
+
+;; Make sure to internalize the shape of functional code as opposed to
+;; imperative code. Get into the habit of writing code that works with
+;; returned values whenever possible, instead of mutating state or
+;; other side-effect
+
+;; IMPORTANT: most lisp operators are intended to be called for their
+;; RETURN VALUES. This is important for program design. Whenever you
+;; call an operator, you need to capture that result in some binding
+;; if you need it later. A good rule of thumb is, if we want to mutate
+;; something, use setf.
+
+;; Also, be wary of let*, as its semantics quickly allow a programmer
+;; to fall into an imperative style
+
+
+;; A common need for side effects in other programming languages is
+;; the need to return multiple values. Most languages only support a
+;; single value return. Common Lisp however allows us to return
+;; multiple values
+
+(truncate 26.1875)
+
+;; When calling code is only expecting a single value, the first value
+;; returned is used. If we want to capture multiple return values from
+;; a procedure, we need to use `multiple-value-bind'
+
+(multiple-value-bind (int frac) (truncate 26.21875)
+  (list int frac))
+
+;; To return multiple values, use the `values' operator
+
+(defun powers (x)
+  (values x (sqrt x) (expt x 2)))
+
+;; Use these two in conjunction to leverage functional programming.
+;; Instead of mutating state directly, return multiple values that can
+;; be used by the caller
+
+
+;; functional vs imperative -- functional (tells computer what you
+;; want), imperative (tells computer what to do)
+
+(defun fun (x)
+  (list 'a (expt (car x) 2)))
+
+(defun imp (x)
+  (let (y sqr)
+    (setf y (car x))
+    (setf sqr (expt y 2))
+    (list 'a sqr)))
+
+(defun qualify (expr)
+  (nconc (copy-list expr) (list 'maybe)))
+
+
+;; convention -- invocation owns objects it receives as RETURN values,
+;; but not objects passed to it as ARGUMENTS
+
+(defun ok (x)
+  (nconc (list 'a x) (list 'c)))
+
+;; nconc might destructively concatenate its arguments, but because
+;; each argument is freshly consed, this is a moot point
+
+(defun not-ok (x)
+  (nconc (list 'a) x (list 'c)))
+
+
+
+;; terrible design, because although it has no side-effects, its
+;; results are purely contingent upon a global variable, whose value
+;; could be anything at the time this procedure is called
+(defun anything (x)
+  (+ x *anything*))
