@@ -337,3 +337,38 @@
 ;; could be anything at the time this procedure is called
 (defun anything (x)
   (+ x *anything*))
+
+
+;;; Chapter 4 -- Utility Functions
+;;; ----------------------------------------------------------------------
+
+(defun all-nicknames (names)
+  (if (null names)
+      nil
+      (nconc (nicknames (car names)
+                        (all-nicknames (cdr names))))))
+
+(mapcan #'nicknames people)
+
+
+(let ((town (find-if #'bookshops towns)))
+  (values town (bookshops town)))
+
+(defun find-books (towns)
+  (if (null towns)
+      nil
+      (let ((shops (bookshops (car towns))))
+        (if shops
+            (values (car towns) shops)
+            (find-books (cdr towns))))))
+
+;; define the general, and pass the specific as an argument. use this
+;; general pattern of abstraction to build the language up toward the
+;; application
+(defun find2 (fn lst)
+  (if (null lst)
+      nil
+      (let ((val (funcall fn (car lst))))
+        (if val
+            (values (car lst) val)
+            (find2 fn (cdr lst))))))
