@@ -686,27 +686,324 @@ embodying the recursive call."
                                             (self (cdr lst)))))))
     #'self))
 
-;; copy-list
-(lrec #'(lambda (x f) (cons x (funcall f))))
+(defun defnode (name conts &optional yes no)
+  (setf (gethash name *nodes*)
+        (make-node :contents conts
+                   :yes yes
+                   :no no)))
 
-;; remove-duplicates
-(lrec #'(lambda (x f) (adjoin x (funcall f))))
+(defnode 'people "Is the person a man?" 'male 'female)
 
-;; find-if, for some function fn
-(lrec #'(lambda (x f) (if (fn x) x (funcall f))))
+(defnode 'male "Is he living?" 'liveman 'deadman)
 
-;; some, for some function fn
-(lrec #'(lambda (x f) (or (fn x) (funcall f))))
+(defnode 'deadman "Was he American?" 'us 'them)
 
-;;; Note: While lrec may be rather readable for an experienced lisper,
-;;; it will usually produce inoptimal code because it is not accouting
-;;; for a tail-recursive solution
+(defnode 'us "Is he on a coin?" 'coin 'cidence)
 
-;;;; Recursion on Subtrees
+(defnode 'coin "Is the coin a penny?" 'penny 'coins)
+
+(defnode 'penny 'lincoln)
+
+;; these definitions are enough to define a simple network (i.e a
+;; binary tree, where intenral nodes hold binary questions,
+;; determining the node to traverse. Lead nodes hold final values, and
+;; return them to the calling procedure
+
+;;  now we need a way to traverse this network
+
+(defun run-node (name)
+  (let ((n (gethash name *nodes*)))
+    (cond ((node-yes n)
+           (format t "~A~%>> " (node-contents n))
+           (case (read)
+             (yes (run-node (node-yes n)))
+             (t (run-node (node-no n)))))
+          (t (node-contents n)))))
+
+;; The above is an example of how we would model a network in most
+;; other languages. It's such a simple, straightforward
+;; implementation, but we can do better
+
+(defvar *nodes* (make-hash-table))
+
+(defun defnode (name conts &optional yes no)
+  (setf (gethash name *nodes*)
+        (if yes
+            #'(lambda ()
+                (format t "~A~%>> " conts)
+                (case (read)
+                  (yes (funcall (gethash yes *nodes*)))
+                  (t (funcall (gethash no *nodes*)))))
+            #'(lambda () conts))))
+
+;; essentially, we are modelling the network using closures instead of
+;; data structures and associated traversal functions. In this way, we
+;; have coupled all the information needed to traverse the network
+;; together in a closure, which is basically just a function with an
+;; internal state that isn't immediately cleaned up by the GC
+
+(funcall (gethash 'people *nodes*))
+
+;; this version of the network changes the nodes hash-table to a raw
+;; list. all nodes defined with `defnode' as previously, however no
+;; closures created. Call `compile-net' once all the nodes in the
+;; network have been defined using defnode to create a whole network
+;; at once
+(defvar *nodes* nil)
+
+(defun defnode (&rest args)
+  (push args *nodes*)
+  args)
+
+
+(defun compile-net (root)
+  (let ((node (assoc root *nodes*)))
+    (if (null node)
+        nil
+        (let ((conts (second node))
+              (yes (third node))
+              (no (fourth node)))
+          (if yes
+              (let ((yes-fn (compile-net yes))
+                    (no-fn (compile-net no)))
+                #'(lambda ()
+                    (format t "~A~%>> " conts)
+                    (funcall (if (eq (read) 'yes)
+                                 yes-fn
+                                 no-fn))))
+              #'(lambda () conts))))))
+
+;; one of the benefits of this version is that the list used to hold
+;; the nodes initially is not necessary once the network has been
+;; compiled and can be safely collected
+
+
+;;;; Macros
 ;;;; ----------------------------------------------------------------------
 
-(defun rfind-if (fn tree)
-  (if (atom tree)
-      (and (funcall fn tree) tree)
-      (or (rfind-if fn (car tree))
-          (if (cdr tree) (rfind-if fn (cdr tree))))))
+;; call:       (memq x choices)
+;; expansion:  (member x choices :test #'eq)
+
+;; when writing macros, first write out how you want the call to look,
+;; and what it needs to expand to. Once this is done, we can begin
+;; writing the body, by first drawing lines from arguments in the call
+;; to corresponding arguments in the expansion.
+
+;; in almost all situations, we will want to begin the body of the
+;; macro by placing a backtick so that we can write templated code
+;; with the comma and comma-at shortcuts
+
+;; Some basic macro writing rules:
+;; ----------------------------------------------------------------------
+;; 1. If there is no line connecting it with the macro call, then
+;; write down the expression itself
+
+;; 2. If there is a connection to one of the arguments in the macro
+;; call, write down the symbol which occurs in the corresponding
+;; position in the macro parameter list, preceded by a comma
+
+;; 3. If there is a connection from a seies of expressions in the
+;; expansion to a series of the arguments in the macro call, write
+;; down the ocreesponding &rest or &body parameter, preceded by a
+;; comma-at
+
+(defmacro my-while (test &body body)
+  `(do ()
+       ((not ,test))
+     ,@body))
+
+;; Whenever working with a macro that can have a body of expressions,
+;; we need to use one of the parameters as a funnel/catch-all that
+;; later gets spliced back into the expansion
+
+;; This exapmle just begins to show the power of macros, and all we
+;; have done so far is shuffle around parameters and some basic
+;; templating. Macros are much more powerful than this as we will see
+
+(defmacro my-dolist ((var list &optional result) &body body)
+  `(progn
+     (mapc #'(lambda (,var) ,@body)
+           ,list)
+     (let ((,var nil))
+       ,result)))
+
+;; in common lisp, it is standard practice to enclose all the
+;; arguments that are not part of the body inside a list
+
+(defmacro when-bind ((car expr) &body body)
+  `(let ((,var ,expr))
+     (when ,var
+       ,@body)))
+
+
+(defmacro our-expander (name) `(get ,name 'expander))
+
+(defmacro our-defmacro (name parms &body body)
+  (let ((g (gensym)))
+    `(progn
+       (setf (our-expander ',name)
+             #'(lambda (,g)
+                 (block ,name
+                   (destructuring-bind ,parms (cdr ,g)
+                     ,@body))))
+       ',name)))
+
+(defun our-macroexpand-1 (expr)
+  (if (and (consp expr) (our-expander (car expr)))
+      (funcall (our-expander (car expr)) expr)
+      expr))
+
+(defmacro our-do (bindforms (test &rest result) &body body)
+  (let ((label (gensym)))
+    `(prog ,(make-initforms bindforms)
+        ,label
+        (if ,test
+            (return (progn ,@result)))
+        ,@body
+        (psetq ,@(make-stepforms bindforms))
+        (go ,label))))
+
+(defun make-initforms (bindforms)
+  (mapcar #'(lambda (b)
+              (if (consp b)
+                  (list (car b) (cadr b))
+                  (list b nil)))
+          bindforms))
+
+(defun make-stepforms (bindforms)
+  (mapcan #'(lambda (b)
+              (if (and (consp b) (third b))
+                  (list (car b) (third b))
+                  nil))
+          bindforms))
+
+;; two distinct types of code invovled with macros: expander code and
+;; expansion code
+
+;; expander code generates the expansion, and the expansion code
+;; appears in the expansion itself
+
+;; good style for expander code can emphasize clarity over efficiency,
+;; because it only gets evaluated at compile time. We want to make
+;; sure that our expansions generated are efficient, because they will
+;; be called over and over again, so we can afford to implement some
+;; more esoteric tricks, so long as the overall understanding of
+;; macro is not impacted
+
+(defmacro our-and (&rest args)
+  (case (length args)
+    (0 t)
+    (1 (car args))
+    (t `(if ,(car args)
+            (our-and ,@(cdr args))))))
+
+(defmacro our-andb (&rest args)
+  (if (null args)
+      t
+      (labels ((expander (rest)
+                 (if (cdr rest)
+                     `(if ,(car rest)
+                          ,(expander (cdr rest)))
+                     (car rest))))
+        (expander args))))
+
+
+;;;; When to Use Macros
+;;;; ----------------------------------------------------------------------
+
+;; macros control the evaluation of their arguments
+
+;; 1. Transformation
+;; 2. Binding
+;; 3. Conditional evaluation
+;; 4. Multiple evaluation
+;; 5. Using the calling environment
+;; 6. Wrapping a new environment
+;; 7. Saving function calls
+
+(defun move-objs (objs dx dy)
+  (multiple-value-bind (x0 y0 x1 y1) (bounds objs)
+    (dolist (o objs)
+      (incf (obj-x o) dx)
+      (incg (obj-y o) dy))
+    (multiple-value-bind (xa ya xb yb) (bounds objs)
+      (redraw (min x0 xa) (min y0 ya)
+              (max x1 xb) (max y1 yb)))))
+
+(defun scale-objs (objs factor)
+  (multiple-value-bind (x0 y0 x1 y1) (bounds objs)
+    (dolist (o objs)
+      (setf (obj-dx o) (* (obj-dx o) factor)
+            (obj-dy 0) (* (obj-dy o) factor)))
+    (multiple-value-bind (xa ya xb yb) (bounds objs)
+      (redraw (min x0 xa) (min y0 ya)
+              (max x1 xb) (max y1 yb)))))
+
+(defmacro with-redraw ((var objs) &body body)
+  (let ((gob (gensym))
+        (x0 (gensym)) (y0 (gensym))
+        (x1 (gensym)) (y1 (gensym)))
+    `(let ((,gob ,objs))
+       (multiple-value-bind (,x0 ,y0 ,x1 ,y1) (bounds ,gob)
+         (dolist (,var ,gob) ,@body)
+         (multiple-value-bind (xa ya xb yb) (bounds ,gob)
+           (redraw (min ,x0 xa) (min ,y0 ya)
+                   (max ,x1 xb) (max ,y1 yb)))))))
+
+(defun move-objs (objs dx dy)
+  (with-redraw (o objs)
+    (incf (obj-x o) dx)
+    (incf (obj-y o) dy)))
+
+(defun scale-objs (objs factor)
+  (with-redraw (o objs)
+    (setf (obj-dx o) (* (obj-dx o) factor)
+          (obj-dy o) (* (obj-dy o) factor))))
+
+;; above is an example of two ways of defining functionality for
+;; redrawing a graphical representation of line segments that have
+;; changed. First we define the line segments as an origin (x,y) and a
+;; vector (dx, dy). We calculate the bounding box enclosing all the
+;; objects in our window, perform the linear transformations, and then
+;; recompute the bounding box
+
+;;;; Variable Capture
+;;;; ----------------------------------------------------------------------
+
+;; Macros are vulnerable to variable capture, which is essetially a
+;; name clash. The macro somehow closed over some variable it wasn't
+;; supposed to and now there's a conflict because a symbol internal to
+;; the macro might be referencing some other variable outside of the
+;; scope
+
+;; variable capture can be traced to one of two situations
+
+;; 1. macro argument capture -- symbol passed to macro refers to a
+;; variable established inside the macroexpansion
+
+(defmacro for ((var start stop) &body body)
+  `(do ((,var ,start (1+ ,var))
+        (limit ,stop))
+       ((> ,var limit))
+     ,@body))
+
+
+(defmacro pathological (&body body)
+  (let* ((syms (remove-if (complement #'symbolp)
+                          (flatten body)))
+         (var (nth (random (length syms))
+                   syms)))
+    `(let ((,var 99))
+       ,@body)))
+
+;; vulnerable to capture
+(defmacro before (x y seq)
+  `(let ((seq ,seq))
+     (< (position ,x seq)
+        (position ,y seq))))
+
+;; a correct definition
+(defmacro before (x y seq)
+  `(let ((xval ,x) (yval ,y) (seq ,seq))
+     (< (position xval seq)
+        (position yval seq))))
