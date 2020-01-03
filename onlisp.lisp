@@ -1007,3 +1007,268 @@ embodying the recursive call."
   `(let ((xval ,x) (yval ,y) (seq ,seq))
      (< (position xval seq)
         (position yval seq))))
+
+;; vulnerable to capture
+(defmacro for ((var start stop) &body body)
+  `(do ((,var ,start (1+ ,var))
+        (limit ,stop))
+       ((> ,var limiti))
+     ,@body))
+
+;; a more correct version
+(defmacro for ((var start stop) &body body)
+  `(do ((b #'(lambda (,var) ,@body))
+        (count ,start (1+ count))
+        (limit ,stop))
+       ((> count limit))
+     (funcall b count)))
+
+;; In the correct version above notice how we capture var and body
+;; inside of a closure. In other words "the do communicates with its
+;; body through the parameters of the closure"
+
+;; NOTE: Wrapping the body in a closure to prevent name collisions is
+;; not a universal panacea. A variable could still be bound twice by
+;; the same `let' or `do'.
+
+;; In addition to avoiding capture with using closures, we can avoid
+;; capture using gensyms (some uniquely generated symbol ,that is
+;; guranteed to not clash). Recall that name collisions occur when two
+;; symbols inadvertently have the same name.
+
+(defmacro for ((var start stop) &body body)
+  `(do ((,var ,start (1+ ,var))
+        (xsf2jsh ,stop))
+       ((> ,var xsf2jsh))
+     ,@body))
+
+;; Even if we make the symbol `xsf2jsh' as esoteric as possible, it is
+;; still possible that there is a name collision. We need a guaranteed
+;; method of generating unique, uncollieded names, and `gensym' is the
+;; utility we use for this.
+
+;; lets visit the `for' macro again
+
+;; vulnerable to capture
+(defmacro for ((var start stop) &body body)
+  `(do ((,var ,start (1+ ,var))
+        (limit ,stop))
+       ((> ,var limit))
+     ,@body))
+
+;; correct
+(defmacro for ((var start stop) &body body)
+  (let ((gstop (gensym)))
+    `(do ((,var ,start (1+ ,var))
+          (,gstop ,stop))
+         ((> ,var ,gstop))
+       ,@body)))
+
+
+(defmacro for ((var start stop) &body body)
+  (let ((gstop (gensym)))
+    `(do ((,var ,start (1+ ,var))
+          (,gstop ,stop))
+         ((> ,var ,gstop))
+       ,@body)))
+
+;; subject to multiple evaluations
+(defmacro for ((var start stop) &body body)
+  `(do ((,var ,start (1+ ,var)))
+       ((> ,var ,stop))
+     ,@body))
+
+;; incorrect order of evaluation
+(defmacro for ((var start stop) &body body)
+  (let ((gstop (gensym)))
+    `(do ((,gstop stop)
+          (,var ,start (1+ ,var)))
+         ((> ,var ,gstop))
+       ,@body)))
+
+
+;; DO NOT DEXSTRUCTIVELLY ALTER &REST PARAMS: They are not guranteed
+;; to be freshly created lists, and may be referenced outside of the
+;; calling scope
+
+(defun et-al (&rest args)
+  (nconc args (list 'et 'al)))
+
+;; Notice how above we are destructively altering the args parameter,
+;; in the body of `et-al'. Calling it normally makes us believe that
+;; it works fine, however if we call it via `apply', we can alter
+;; existing data structures destructively, which may be unknown to the
+;; calling code
+
+(setf greats '(lenoardo michelango))    ; (leonardo michelangelo)
+
+(apply #'et-al greats)                  ; (leonardo michelangelo et al)
+
+greats                                  ; (leonardo michelangelo et al)
+
+(defmacro echo (&rest args)
+  `',(nconc args (list 'amen)))
+
+
+(defun foo () (echo x))
+
+(defmacro echo (&rest args)
+  `'(,@args amen))
+
+;; any macro argument that is a LIST should be LEFT ALONE
+
+;; this will work
+(defun ntha (n lst)
+  (if (= n 0)
+      (car lst)
+           (ntha (- n 1) (cdr lst))))
+
+
+;; this wont compile
+(defmacro nthb (n lst)
+  '(if (= ,n 0)
+    (car ,lst)
+    (nthb (- ,n 1) (cdr ,lst))))
+
+;; ntha is okay because it is a tail-recursive call which can easily
+;; be converted into an iterative equivalent
+
+(defmacro nthc (n lst)
+  `(do ((n2 ,n (1- n2))
+        (lst2 ,lst (cdr lst2)))
+       ((= n20) (car lst2))))
+
+;; we can write nthb as above so that it will compile
+
+(defmacro nthd (n lst)
+  `(nth-fn ,n ,lst))
+
+(defun nth-fn (n lst)
+  (if (= n 0)
+      (car lst)
+      (nth-gn (- n 1) (cdr lst))))
+
+(defmacro nthe (n lst)
+  `(labels ((nth-fn (n lst)
+              (f (= n 0)
+                 (car lst)
+                 (nth-fn (- n 1) (cdr lst)))))
+     (nth-fn ,n ,lst)))
+
+;; the above examples show two methods of creating what seems to be a
+;; recursive macro. nthd expands into a recursive call to nth-fn. Each
+;; example solves a different problem. The first two `nthd' and
+;; `nth-fn' solve the problem of saving the user some typing, i.e not
+;; having to quote arguments. However, `nth-e' is a little more
+;; specialized in that it is useful if you need the whole expansion
+;; inserted into the lexical environment of the macro call
+
+(defmacro ora (&rest args) (or-expand args))
+
+(defun or-expand (args)
+  (if (null args)
+      nil
+      (let ((sym (gensyms)))
+        `(let ((,sym ,(car args)))
+           (if ,sym
+               ,sym
+               ,(or-expand (cdr args)))))))
+
+(defmacro orb (&rest args)
+  (if (null args)
+      nil
+      (let ((sym (gensym)))
+        `(let ((,sym ,(car args)))
+           (if ,sym
+               ,sym
+               (orb ,@(cdr args)))))))
+
+;; the above two definitions are functionally equivalent, and their
+;; definition in a program are a matter of programmer preference
+
+;;;; Classic Macros
+;;;; ----------------------------------------------------------------------
+
+;;  three categories of macros that we are typically to write, with a
+;;  lot of overlap between them
+
+;; first group: create context
+
+(defmacro our-let (binds &body body)
+  `((lambda ,(mapcar #'(lambda (x)
+                         (if (consp x) (car x) x))
+              binds)
+      ,@body)
+    ,@(mapcar #'(lambda (x)
+                  (if (consp x) (cadr x) nil))
+              binds)))
+
+(defmacro when-bind ((var expr) &body body)
+  `(let ((,var ,expr))
+     (when ,var
+       ,@body)))
+
+(defmacro when-bind* (binds &body body)
+  (if (null binds)
+      `(progn ,@body)
+      `(let (,(car binds))
+         (if ,(caar binds)
+             (when-bind* ,(cdr binds) ,@body)))))
+
+(defmacro with-gensyms (syms &body body)
+  `(let ,(mapcar #'(lambda (s)
+                     `(,s (gensym)))
+          syms)
+     ,@body))
+
+;; `with-gensyms' is an important macro to keep in mind, because it
+;; will take in a list of symbols as argument, and prevent them from
+;; having name collisions by mapping gensyms over each symbol inside a
+;; lexical environment local to the macro call
+
+;; `when-bind' wiil bind the values to forms if
+;; their conditions are met. If any of the values returns `nil', then
+;; the entire expression returns nil
+
+(when-bind* ((x (find-if #'consp '(a (1 2) b)))
+             (y (find-if #'oddp x)))
+            (+ y 10))
+
+;; instead of writing the following...
+(defmacro with-redraw ((var objs) &body body)
+  (let ((gob (gensym))
+        (x0 (gensym)) (y0 (gensym))
+        (x1 (gensym)) (y1 (gensym)))
+    ...))
+
+;; we can instead write the simpler form using `with-gensyms'
+(defmacro with-redraw ((var objs) &body body)
+  (with-gensyms (gob x0 y0 x1 y1)
+    ...))
+
+(defmacro condlet (clauses &body body)
+  (let ((bodfn (gensym))
+        (vars (mapcar #'(lambda (v) (cons v (gensym)))
+                      (remove-duplicates
+                       (mapcar #'car
+                               (mappend #'cdr clauses))))))
+    `(labels ((,bodfn ,(mapcar #'car vars)
+                ,@body))
+       (cond ,@(mapcar #'(lambda (cl)
+                           (condlet-clause vars cl bodfn))
+                       clauses)))))
+
+(defun condlet-clause (vars cl bodfn)
+  `(,(car cl) (let ,(mapcar #'cdr vars)
+                (let ,(condlet-binds vars cl)
+                  (,bodfn ,@(mapcar #'cdr vars))))))
+
+(defun condlet-binds (var cl)
+  (mapcar #'(lambda (bindform)
+              (if (consp bindform)
+                  (cons (cdr (assoc (car bindform) vars))
+                        (cdr (bindform)))))
+          (cdr cl)))
+
+;; NOTE: no nice concise pattern for evaluating the same code, but
+;; with varying bindings depending on some condition
