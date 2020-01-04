@@ -1246,12 +1246,19 @@ greats                                  ; (leonardo michelangelo et al)
   (with-gensyms (gob x0 y0 x1 y1)
     ...))
 
+(defun mappend (fn &rest lsts)
+  (apply #'append (apply #'mapcar fn lsts)))
+
+;; condlet expands into code which defines a local function with
+;; `labels' within it a `cond' clause determines which set of initial
+;; values to evaluate and pass to the function
+
 (defmacro condlet (clauses &body body)
   (let ((bodfn (gensym))
         (vars (mapcar #'(lambda (v) (cons v (gensym)))
                       (remove-duplicates
                        (mapcar #'car
-                               (mappend #'cdr clauses))))))
+                               (mappend #'cdr clauses)))))) ; user `mappend' here instead of `mapcan'
     `(labels ((,bodfn ,(mapcar #'car vars)
                 ,@body))
        (cond ,@(mapcar #'(lambda (cl)
@@ -1263,12 +1270,204 @@ greats                                  ; (leonardo michelangelo et al)
                 (let ,(condlet-binds vars cl)
                   (,bodfn ,@(mapcar #'cdr vars))))))
 
-(defun condlet-binds (var cl)
+(defun condlet-binds (vars cl)
   (mapcar #'(lambda (bindform)
               (if (consp bindform)
                   (cons (cdr (assoc (car bindform) vars))
-                        (cdr (bindform)))))
+                        (cdr bindform))))
           (cdr cl)))
 
 ;; NOTE: no nice concise pattern for evaluating the same code, but
 ;; with varying bindings depending on some condition
+(macroexpand (condlet (((= 1 2) (x (princ 'a)) (y (princ 'b)))
+                       ((= 1 1) (y (princ 'c)) (x (princ 'd)))
+                       (t (x (princ 'e)) (z (princ 'f))))
+               (list x y z)))
+
+;;;; The `with-' Macro
+;;;; ----------------------------------------------------------------------
+
+;;  There are other kinds of contexts outside of a lexical
+;;  environment, for example the state of the entire world (i.e
+;;  special variables, contents of data structures, and state of
+;;  things outside of Lisp)
+
+;;  context-building macros are typically prefixed with `with-'
+
+(with-open-file (s "dump" :direction :output)
+  (princ 99 s))
+
+;; macros which create context expand into a block of code. In this
+;; block of code we may place additional expressions before, after, or
+;; both. Expressions running after the block of code may have the
+;; intention of ensuring that the system is left in a consistent
+;; state. In this situation, we typically will expand into the
+;; `unwind-protect' macro, which ensure that certain expressions are
+;; evaluated even if execution is interrupted. The value of the first
+;; argument is returned if all is sucessful.
+
+(setf x 'a)
+
+(unwind-protect
+     (progn (princ "What error?")
+            (error "This error."))
+  (setf x 'b))
+
+;; an example of this usage is the `with-open-file' macro, which
+;; expands into `unwind-protect', allowing us to ensure that the file
+;; which is opened is closed after we are finished evaluating
+;; expressions in the body, even if an error occurs. This helps ensure
+;; that the system is left in a consistent state, i.e all unneeded
+;; file handles are properly closed
+
+;; context-creating macros mostly written for specifc applications
+
+;; EXAMPLE: Writing a program which deals with multiple, remote
+;; databases. The program speaks to only a single database at a time,
+;; stored in a top-level variable *db*. Before using the database, we
+;; need to lock it, and when we are done, release the lock. We can
+;; capture this pattern using a macro, which will allow us to wrap the
+;; expression body we want to evaluate inside of some other code which
+;; is sure to be run, i.e `with-resources' could attempt to acquire
+;; the lock, block until it has it, evaluate the expressions inside
+;; its body, and then finally release the lock
+
+(let ((temp *db*))
+  (setf *db* db)
+  (lock *db*)
+  (prog1 (eval-query q)
+    (release *db*)
+    (setf *db* temp)))
+
+
+;; pure macro
+(defmacro with-db (db &body body)
+  (let ((temp (gensym)))
+    `(let ((,temp *db*))
+       (unwind-protect
+            (progn
+              (setf *db* ,db)
+              (lock *db*)
+              ,@body)
+         (progn
+           (release *db*)
+           (setf *db* ,temp))))))
+
+;; combination macro/function
+(defmacro with-db (db &body body)
+  (let ((gbod (gensym)))
+    `(let ((,gbod #'(lambda () ,@body)))
+       (declare (dynamic-extent ,gbod)) ; `dynamic-extent' allows us
+                                        ; to tell the compiler that it
+                                        ; should allocate space on
+                                        ; stack for closure
+       (with-db-fb *db* ,db ,gbod))))
+
+(defun with-db-fn (old-db new-db body)
+  (unwind-protect
+       (progn
+         (setf *db* new-db)
+         (lock *db*)
+         (funcall body))
+    (progn
+      (release *db*)
+      (setf *db* old-db))))
+
+(with-db db
+  (eval-query q))
+
+;;;; Coniditonal Evaluation
+;;;; ----------------------------------------------------------------------
+
+(defmacro if3 (test t-case nil-case ?-case)
+  `(case ,test
+     ((nil) ,nil-case)
+     (? ,?-case)
+     (t ,t-case)))
+
+(defmacro nif (expr pos zero neg)
+  (let ((g (gensym)))
+    `(let ((,g ,expr))
+       (cond ((plusp ,g) ,pos)
+             ((zerop ,g) ,zero)
+             (t ,neg)))))
+
+;; functions ALWAYS evaluate all of their arguments. However, it is
+;; conceivable that we might only want to evaluate certain arguments
+;; under certain conditions. This is only possible using macros, or
+;; some special built-in operators
+
+(mapcar #'(lambda (x)
+            (nif x 'p 'z 'n))
+        '(0 1 -1))
+
+;; when tewsting whether an object is one of a set of alternatives,
+;; express the query as a disjunction
+
+(let ((x (foo)))
+  (or (eql x (bar)) (eql x (baz))))
+
+;; or express it in terms of set membership
+
+(member (foo) (list (bar) (baz)))
+
+;; this is more abstract, i.e discussing the problem at a higher
+;; level, but it is less efficient. `member' conses up alternatives
+;; into a list to search through, and to do this, all the alternatives
+;; must be evaluated, even if their values might not be needed.
+
+(defmacro in (obj &rest choices)
+  (let ((insym (gensym)))
+    `(let ((,insym ,obj))
+       (or ,@(mapcar #'(lambda (c) `(eql ,insym ,c)) ; `or' can be short-circuit evaluated, as soon as an expression evaluates to true
+                     choices)))))
+
+;; "in queue", quoting variant of in
+(defmacro inq (obj &rest args)
+  `(in ,obj ,@(mapcar #'(lambda (a)
+                          `',a)
+                      args)))
+
+(defmacro in-if (fn &rest choices)
+  (let ((fnsym (gensym)))
+    `(let ((,fnsym ,fn))
+       (or ,@(mapcar #'(lambda (c)
+                         `(funcall ,fnsym ,c))
+                     choices)))))
+
+;; the common lisp `case' macro expects its keys to be constants,
+;; however, sometimes we might want the keys to be evaluated, in which
+;; case we can define the following form
+
+;; because `>case' is using the `>casex' helper, which itself expands
+;; into the `in' macro, we can evaluate keys up until we no longer
+;; need to, i.e we are evaluating the keys lazily
+(defmacro >case (expr &rest clauses)
+  (let ((g (gensym)))
+    `(let ((,g ,expr))
+       (cond ,@(mapcar #'(lambda (cl) (>casex g cl))
+                       clauses)))))
+
+(defun >casex (g cl)
+  (let ((key (car cl)) (rest (cdr cl)))
+    (cond ((consp key) `((in ,g ,@key) ,@rest))
+          ((inq key t otherwise) `(t ,@rest))
+          (t (error "bad >case clause")))))
+
+(in (foo) (bar) (baz))
+
+(macroexpand-1 (inq operator + - *))
+
+;; generally, we want to use macros to transform elegant expressions
+;; into efficient ones
+
+;; in and inq use `eql' to test for equality, if we want a more
+;; generalized form (i.e we decide which test to use), then we can use
+;; the more general `in-if'
+
+(member x (list a b) :test #'equal)
+(in-if #'(lambda (y) (equal x y)) a b)
+
+
+(some #'oddp (list a b))
+(in-if #'oddp a b)
